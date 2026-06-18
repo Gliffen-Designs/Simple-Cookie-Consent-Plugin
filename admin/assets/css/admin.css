@@ -1,0 +1,27 @@
+/* Gliffen Admin Styles */
+
+.gliffen-cookie-consent-settings {
+    max-width: 1000px;
+}
+
+.gliffen-settings-form table.form-table {
+    margin-top: 20px;
+}
+
+.gliffen-settings-form input[type="checkbox"],
+.gliffen-settings-form input[type="text"],
+.gliffen-settings-form input[type="url"],
+.gliffen-settings-form input[type="number"],
+.gliffen-settings-form select {
+    padding: 8px;
+    border-radius: 4px;
+}
+
+.gliffen-settings-form select {
+    min-width: 200px;
+}
+
+.gliffen-settings-form .description {
+    font-style: italic;
+    color: #666;
+}
