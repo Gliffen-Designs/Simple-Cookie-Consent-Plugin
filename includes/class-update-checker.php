@@ -90,9 +90,7 @@ class Gliffen_Cookie_Consent_Update_Checker {
         $accepted_slugs = array(
             $this->plugin_slug,
             'simple-cookie-consent-plugin',
-            'Simple-Cookie-Consent-Plugin',
-            'gliffen-cookie-consent-plugin',
-            'Gliffen-Cookie-Consent-Plugin',
+            'Simple-Cookie-Consent-Plugin'
         );
 
         if (!isset($args->slug) || !in_array($args->slug, $accepted_slugs, true)) {
