@@ -28,6 +28,8 @@ jobs:
           rsync -av \
             --exclude='.git' \
             --exclude='.github' \
+            --exclude='.gitattributes' \
+            --exclude='.gitignore' \
             --exclude='node_modules' \
             --exclude='tests' \
             --exclude='*.zip' \
@@ -35,8 +37,9 @@ jobs:
 
       - name: Create ZIP
         run: |
-          cd build
-          zip -r "../${ZIP_NAME}" "${PLUGIN_SLUG}"
+          cd build/${PLUGIN_SLUG}
+          zip -r "../../${ZIP_NAME}" .
+          cd ../..
 
       - name: Create or update GitHub release
         uses: softprops/action-gh-release@v2
