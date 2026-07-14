@@ -32,14 +32,14 @@ jobs:
             --exclude='.gitignore' \
             --exclude='node_modules' \
             --exclude='tests' \
+            --exclude='build' \
             --exclude='*.zip' \
             ./ build/${PLUGIN_SLUG}/
 
       - name: Create ZIP
         run: |
-          cd build/${PLUGIN_SLUG}
-          zip -r "../../${ZIP_NAME}" .
-          cd ../..
+          cd build
+          zip -r "../${ZIP_NAME}" "${PLUGIN_SLUG}"
 
       - name: Create or update GitHub release
         uses: softprops/action-gh-release@v2
