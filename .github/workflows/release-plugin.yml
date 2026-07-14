@@ -18,8 +18,8 @@ jobs:
 
       - name: Set variables
         run: |
-          echo "PLUGIN_SLUG=gliffen-cookie-consent" >> $GITHUB_ENV
-          echo "ZIP_NAME=gliffen-cookie-consent.zip" >> $GITHUB_ENV
+          echo "PLUGIN_SLUG=simple-cookie-consent" >> $GITHUB_ENV
+          echo "ZIP_NAME=simple-cookie-consent.zip" >> $GITHUB_ENV
 
       - name: Build plugin folder
         run: |
@@ -41,6 +41,6 @@ jobs:
       - name: Create or update GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: gliffen-cookie-consent.zip
+          files: simple-cookie-consent.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

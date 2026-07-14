@@ -3,12 +3,12 @@
  * Plugin Name: Simple Cookie Consent
  * Plugin URI: https://github.com/Gliffen-Designs/Simple-Cookie-Consent-Plugin
  * Description: Lightweight GDPR-compliant cookie consent plugin with third-party tracking control
- * Version: 1.0.0
+ * Version: 1.0.1
  * Update URI: https://github.com/Gliffen-Designs/Simple-Cookie-Consent-Plugin
  * Author: Gliffen
  * Author URI: https://gliffen.com
  * License: GPL v2 or later
- * Text Domain: gliffen-cookie-consent
+ * Text Domain: simple-cookie-consent
  * Domain Path: /languages
  */
 
@@ -109,7 +109,7 @@ function gliffen_cookie_consent_activate() {
                 '__utmz'
             ),
             'marketing' => array(
-                '_fbp',     // Meta Pixel
+                '_fbp',      // Meta Pixel
                 'fr',        // Meta
                 'IDE',       // Google Ads
                 'ANID',      // Google Ads
