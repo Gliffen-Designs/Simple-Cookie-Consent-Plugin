@@ -199,7 +199,10 @@
             // Save to localStorage
             localStorage.setItem('gliffen_consent', JSON.stringify(consentObject));
 
-            // Update global
+            // Keep local state in sync so triggerTrackingReinit sees the new choices
+            this.consent = consentObject;
+
+            // Update global (read live by the cookie interceptor in wp_head)
             window.glifCookieConsent = consentObject;
 
             // Log to server (optional)

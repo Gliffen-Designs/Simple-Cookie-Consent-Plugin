@@ -151,17 +151,23 @@ class Gliffen_Cookie_Consent_Manager {
                 return 'necessary'; // Default to necessary if not found
             }
 
+            // Make consent data globally available for third-party triggers
+            window.glifCookieConsent = userConsent;
+
             // Check if cookie is allowed by consent
+            // Reads window.glifCookieConsent live so cookies unblock immediately after "Accept" without a page reload
             function isCookieAllowed(cookieName) {
                 var category = getCookieCategory(cookieName);
-                
+
                 // Necessary cookies are always allowed
                 if (category === 'necessary') {
                     return true;
                 }
-                
+
+                var currentConsent = window.glifCookieConsent || userConsent;
+
                 // Check if user has consented to this category
-                return userConsent[category] === true;
+                return currentConsent[category] === true;
             }
 
             // Override document.cookie setter
@@ -174,6 +180,7 @@ class Gliffen_Cookie_Consent_Manager {
                     if (isCookieAllowed(cookieName)) {
                         // User consented - allow the cookie
                         originalDescriptor.set.call(this, value);
+                        console.debug('[Simple Cookie Consent Plugin] Issued cookie: ' + cookieName);
                     } else {
                         // User did not consent - block silently
                         console.debug('[Simple Cookie Consent Plugin] Blocked cookie: ' + cookieName);
@@ -184,8 +191,6 @@ class Gliffen_Cookie_Consent_Manager {
                 configurable: true
             });
 
-            // Make consent data globally available for third-party triggers
-            window.glifCookieConsent = userConsent;
             window.glifCookieAllowed = isCookieAllowed;
         })();
         </script>
