@@ -1,15 +1,15 @@
 # Simple Cookie Consent Plugin - Complete Developer Guide
 
-A lightweight, GDPR-compliant cookie consent plugin for WordPress that controls third-party tracking cookies and services. This document provides comprehensive technical context for understanding and extending the plugin.
+A lightweight cookie consent plugin for WordPress built around a **US-style opt-in-by-default** model, with a heuristic opt-out affordance for likely EU visitors. This document provides comprehensive technical context for understanding and extending the plugin.
 
 ---
 
 ## 🎯 Plugin Overview
 
 **Purpose**: Control third-party tracking cookies (GA, Meta Pixel, Google Ads, etc.) by:
-1. Blocking cookies from being set until user explicitly consents
-2. Presenting a user-friendly consent banner
-3. Re-initializing tracking services after consent (same session)
+1. Allowing cookies/tracking by default (opt-in model) until the user explicitly opts out, unless a Global Privacy Control (GPC) signal is detected
+2. Presenting a user-friendly consent banner so visitors can accept, customize, or (if likely in the EU) reject
+3. Keeping Google Consent Mode (`dataLayer`/`gtag`) in sync so GTM-only installs still receive consent signals
 4. Storing consent preferences for repeat visitors
 
 **Key Design Decision**: Lightweight plugin with all settings stored in WordPress options table (no custom database tables) to minimize complexity and database footprint.
@@ -141,13 +141,19 @@ gliffen-cookie-consent/
 **How it works**:
 ```javascript
 1. Load user consent from localStorage
-2. Build cookie → category mapping from PHP settings
-3. Override Document.prototype.cookie setter:
+2. If no explicit decision exists yet, apply the default:
+   - Opt-in (necessary+analytics+marketing = true) unless navigator.globalPrivacyControl is true
+   - If GPC is set, default to opt-out (necessary only) instead
+3. Build cookie → category mapping from PHP settings
+4. Define window.dataLayer/gtag (if not already defined by gtag.js) and push
+   gtag('consent', 'default', {...}) reflecting the consent above, so GTM containers
+   receive Consent Mode signals even when GA is only installed via GTM
+5. Override Document.prototype.cookie setter:
    - When script tries: document.cookie = "ga=xyz"
    - Check if "_ga" is in a consented category
    - If NOT consented: silently ignore the write
    - If consented: allow it via original setter
-4. Expose globals: window.glifCookieConsent, window.glifCookieAllowed
+6. Expose globals: window.glifCookieConsent, window.glifCookieAllowed
 ```
 
 **Critical Detail**: This runs INLINE in `<head>` before wp_enqueue_scripts fires. This is essential because:
@@ -289,13 +295,15 @@ return $sanitized;
 - Creates inline style for color application
 
 #### Button Events
-- **Accept All**: `{necessary: true, analytics: true, marketing: true, preferences: true}`
-- **Reject All**: `{necessary: true, analytics: false, marketing: false, preferences: false}`
+- **Accept All**: `{necessary: true, analytics: true, marketing: true}` (always shown)
+- **Reject All**: `{necessary: true, analytics: false, marketing: false}` (only rendered when `isLikelyEU()` returns true - hidden for everyone else)
 - **Customize**: Opens modal with checkboxes
 
 #### Customize Modal
 - Shows checkbox for each category
 - "Necessary" is disabled and always checked
+- "Analytics" is pre-checked by default (one click to reach a privacy-friendly middle ground); "Marketing" is pre-unchecked by default
+- If GPC is detected, both Analytics and Marketing default to unchecked
 - "Save Preferences" button collects checked categories
 - Builds consent object and calls `saveConsent()`
 
@@ -311,40 +319,49 @@ return $sanitized;
 
 #### **CRITICAL: Tracking Re-initialization** (`triggerTrackingReinit()`)
 
-**This is where the "Option 2" approach is implemented**. After user consents:
+Runs both when a decision already exists AND on first load with the default (opt-in/GPC) consent, so tracking is active immediately rather than waiting for a click:
 
 ```javascript
-// Google Analytics
-if (window.gtag && this.consent && this.consent.analytics) {
-    gtag('consent', 'update', { 'analytics_storage': 'granted' });
-    gtag('config', 'G_' + trackingId, { 'anonymize_ip': true });
+// gtag/dataLayer are defined by the wp_head interceptor even when GA is only
+// loaded via GTM (no direct gtag.js), so this always works
+window.dataLayer = window.dataLayer || [];
+var gtag = window.gtag || function() { dataLayer.push(arguments); };
+var consent = this.consent || {};
+
+// Analytics: explicit granted/denied is always pushed (not just when granted),
+// so revoking consent mid-session is honored too
+gtag('consent', 'update', {
+    'analytics_storage': consent.analytics === true ? 'granted' : 'denied'
+});
+if (consent.analytics === true) {
+    gtag('config', trackingId, { 'anonymize_ip': true });
 }
 
 // Meta Pixel
-if (window.fbq && this.consent && this.consent.marketing) {
-    fbq('consent', 'grant');
-    fbq('track', 'PageView');  // Re-track page view
+if (window.fbq) {
+    if (consent.marketing === true) {
+        fbq('consent', 'grant');
+        fbq('track', 'PageView');
+    } else {
+        fbq('consent', 'revoke');
+    }
 }
 
-// Google Ads
-if (window.gtag && this.consent && this.consent.marketing) {
-    gtag('consent', 'update', {
-        'ad_storage': 'granted',
-        'ad_user_data': 'granted',
-        'ad_personalization': 'granted'
-    });
-}
+// Google Ads / conversion tracking - same explicit granted/denied pattern
+gtag('consent', 'update', {
+    'ad_storage': consent.marketing === true ? 'granted' : 'denied',
+    'ad_user_data': consent.marketing === true ? 'granted' : 'denied',
+    'ad_personalization': consent.marketing === true ? 'granted' : 'denied'
+});
 
 // Custom event for other services
 document.dispatchEvent(new CustomEvent('gliffen-consent-granted', { detail: this.consent }));
 ```
 
 **Why this works**:
-- GA/Meta scripts are already loaded (they tried to set cookies earlier)
-- They expose global APIs (`window.gtag`, `window.fbq`)
-- We call their APIs to "grant" consent retroactively
-- This triggers them to track the current page view in same session
-- Subsequent pages automatically have cookies (localStorage persists)
+- A `gtag`/`dataLayer` shim is defined in `<head>` before GTM's container script loads, so Consent Mode signals reach GTM even when GA is only installed as a GTM tag (no direct `gtag.js`)
+- Consent updates are pushed explicitly in both directions (granted AND denied), not just when granting, so switching from Accept to Reject mid-session actually revokes tracking
+- Cookies are allowed/blocked live via `window.glifCookieConsent`, so no page reload is needed either way
 
 #### Consent Logging (`logConsentToServer()`)
 - Makes AJAX POST to `wp_ajax_gliffen_save_consent`
@@ -445,7 +462,6 @@ localStorage key: `gliffen_consent`
     "necessary": true,
     "analytics": false,
     "marketing": true,
-    "preferences": false,
     "timestamp": 1234567890000
 }
 ```
@@ -455,11 +471,41 @@ localStorage key: `gliffen_consent`
 var allowed = userConsent['analytics'] === true;  // false in example
 ```
 
+If this key doesn't exist yet (no decision made), the effective consent used for cookies and Consent Mode is computed on the fly instead of read from storage - see "Consent Defaults & Regional Behavior" below.
+
+---
+
+## 🌎 Consent Defaults & Regional Behavior
+
+This plugin defaults to a **US opt-in model**: tracking is allowed until the user says otherwise, with two overrides.
+
+### 1. Global Privacy Control (GPC)
+- Checked via `navigator.globalPrivacyControl === true` in both the `wp_head` interceptor (PHP) and `consent-banner.js` (JS), so they agree before either loads a tag.
+- If GPC is present **and no explicit decision has been saved yet**, the default flips from opt-in to opt-out (`analytics`/`marketing` = `false`).
+- GPC only affects the *default* used before a decision exists - it does not retroactively override a previously saved "Accept All".
+
+### 2. EU heuristic (`isLikelyEU()`)
+- Checks `Intl.DateTimeFormat().resolvedOptions().timeZone` against common EU time zone prefixes (`Europe/`, `Atlantic/Azores`, `Atlantic/Canary`) and `navigator.languages` against a list of EU language codes.
+- Used **only** to decide whether the "Reject All" button is rendered on the banner. It does not change the default consent value itself.
+- Visitors who don't match either signal only see "Accept All" and "Customize" - they can still opt out entirely via Customize.
+
+### 3. Effective default consent (no decision yet)
+| Signal | Necessary | Analytics | Marketing | Reject All button |
+|---|---|---|---|---|
+| No GPC, not likely EU | true | true | true | hidden |
+| No GPC, likely EU | true | true | true | shown |
+| GPC detected | true | false | false | per EU heuristic |
+
+### 4. Customize modal defaults
+- Necessary: always checked, disabled
+- Analytics: checked by default (unless GPC detected)
+- Marketing: unchecked by default
+
 ---
 
 ## 🔄 User Journey & Session Timeline
 
-### Session 1: First-Time Visitor
+### Session 1: First-Time Visitor (default US visitor, no GPC)
 
 **Timeline**:
 ```
@@ -468,41 +514,33 @@ var allowed = userConsent['analytics'] === true;  // false in example
    └─ Cookie interceptor injected (priority: runs FIRST)
    └─ cookieRegistry loaded from PHP
    └─ localStorage checked - EMPTY (no consent yet)
+   └─ No GPC signal detected → default consent = {necessary: true, analytics: true, marketing: true}
+   └─ gtag('consent', 'default', {analytics_storage: 'granted', ...}) pushed to dataLayer
    
-3. GA script loads
-   └─ window.gtag defined
-   └─ gtag('config', 'GA_ID') called
-   └─ Internally: document.cookie = "_ga=..." attempted
-   └─ Interceptor catches it, checks localStorage.gliffen_consent
-   └─ No consent → BLOCKED
+3. GA script (direct or via GTM) loads
+   └─ document.cookie = "_ga=..." attempted
+   └─ Interceptor checks the default consent above → ALLOWED
+   └─ GA tracks the page view immediately, no waiting for a click
    
 4. Meta Pixel script loads
-   └─ Similar flow, _fbp cookie BLOCKED
+   └─ Similar flow, _fbp cookie ALLOWED by default
    
 5. <body> renders, <footer> loads
-   └─ Banner rendered (no consent decision made)
-   └─ User sees banner
+   └─ Banner still rendered (no explicit decision saved yet)
+   └─ User sees banner with Accept All + Customize (no Reject All - not likely EU)
    
-6. User clicks "Accept All"
-   └─ Consent saved to localStorage: {analytics: true, marketing: true, ...}
+6. User clicks "Accept All" (or ignores the banner - tracking already active)
+   └─ Consent saved to localStorage: {necessary: true, analytics: true, marketing: true, timestamp}
    └─ window.glifCookieConsent updated
    └─ AJAX sent to server (audit log)
-   └─ triggerTrackingReinit() called:
-      └─ gtag('consent', 'update', {analytics_storage: 'granted'})
-      └─ fbq('consent', 'grant')
-      └─ Custom event: gliffen-consent-granted
+   └─ triggerTrackingReinit() re-confirms granted state to gtag/fbq
    └─ Banner removed
-   
-7. GA/Meta respond to consent update
-   └─ Both track current page view
-   └─ Now document.cookie writes are allowed (same session)
-   └─ Cookies ARE SET
 ```
 
 **Result**: 
-- No cookies on initial page load ✅
-- Tracking activated after consent ✅
-- Same session tracked by GA/Meta ✅
+- Cookies/tracking active from initial page load (opt-in model) ✅
+- Banner still available for the user to opt out via Customize ✅
+- GPC visitors instead default to denied until they explicitly opt in ✅
 
 ### Session 2: Return Visitor
 
@@ -655,9 +693,9 @@ Use this to initialize custom tracking services not in the pre-configured list.
 3. **Third-Party iframes**: Facebook/external iframes can't be controlled.
    - Solution: Sandbox iframes with restrictions
 
-4. **Page Reload for Initial Tracking**: GA/Meta might not track page view before reload if cookies blocked.
-   - Current behavior: Tracking starts on page 2 (after consent + page navigation)
-   - Could be improved: Add page reload option after consent
+4. **Page Reload for Initial Tracking**: Not applicable for the default opt-in path (tracking starts immediately on first load); only relevant if GPC forces a denied default and the user later opts in via the banner - tracking activates same-session via `triggerTrackingReinit()`, no reload needed
+
+5. **`isLikelyEU()` is a heuristic, not a legal determination**: Time zone and browser language can be spoofed or misleading (e.g., travelers, VPNs, multilingual users). It only controls whether the "Reject All" button is shown - EU visitors can still fully opt out via Customize even if misclassified.
 
 ### Debugging Checklist
 
@@ -667,16 +705,21 @@ Use this to initialize custom tracking services not in the pre-configured list.
 - Check console for JS errors
 - Verify `get_user_consent()` returns null
 
-**Cookies still being set**:
+**Cookies still being set after Reject All**:
 - Verify cookie name in registry
 - Check category mapping is correct
 - Verify localStorage consent object is valid JSON
 - Inspect Network tab for Set-Cookie headers
 
+**Tracking not active by default for a new visitor**:
+- Confirm `navigator.globalPrivacyControl` isn't unexpectedly `true` in the browser/devtools
+- Check that `gtag('consent', 'default', ...)` is present in the page source (output by `output_cookie_interceptor()`)
+- Verify `window.glifCookieConsent` reflects `{analytics: true, marketing: true}` before any decision is made
+
 **Tracking not working after consent**:
-- Verify `window.gtag` and `window.fbq` are defined
+- Verify `window.gtag` and `window.fbq` are defined (or that the `dataLayer` shim is present)
 - Check service IDs are correct
-- Confirm `gtag('consent', 'update', ...)` is being called
+- Confirm `gtag('consent', 'update', ...)` is being called with the expected granted/denied values
 - Look for JavaScript errors in console
 
 ---
@@ -746,17 +789,19 @@ check_ajax_referer('gliffen_consent_nonce');
 
 ## 🎓 Key Takeaways for Next Developer
 
-1. **The interceptor is the heart** - It runs in `<head>` via `wp_head` hook at priority 1. This must happen before external scripts load.
+1. **The interceptor is the heart** - It runs in `<head>` via `wp_head` hook at priority 1. This must happen before external scripts load. It now also computes the default consent (opt-in, or opt-out if GPC) and pushes `gtag('consent', 'default', ...)` before GTM's container script loads.
 
-2. **Consent is localStorage-based** - Simple `localStorage.getItem('gliffen_consent')` returns JSON. No complex server checks needed for frontend.
+2. **Consent is localStorage-based** - Simple `localStorage.getItem('gliffen_consent')` returns JSON, or `null` if no decision has been made yet. When `null`, both PHP and JS independently compute the same default (opt-in unless GPC) rather than treating "undecided" as "denied."
 
-3. **Tracking re-init is the key UX feature** - After consent, we call `gtag()`, `fbq()` APIs directly to activate tracking same-session. This prevents double-counting users as separate sessions.
+3. **Tracking re-init always pushes both directions** - `triggerTrackingReinit()` calls `gtag()`/`fbq()` with explicit `granted`/`denied` values every time consent changes (not just when granting), so switching from Accept to Reject mid-session actually revokes tracking, and GTM-only installs (no direct `gtag.js`) still receive the signal via a `dataLayer` shim.
 
-4. **All settings in one wp_options key** - No custom tables. Makes plugin portable and WordPress-native. Structure is: `gliffen_cookie_consent_settings => array of everything`.
+4. **The "Reject All" button is conditional** - Only rendered when `isLikelyEU()` returns true. All visitors can still fully opt out through "Customize" regardless.
 
-5. **Admin page is standard WordPress** - Uses `register_setting()`, tabbed interface in template. Color picker via WordPress native `wpColorPicker()`.
+5. **All settings in one wp_options key** - No custom tables. Makes plugin portable and WordPress-native. Structure is: `gliffen_cookie_consent_settings => array of everything`.
 
-6. **Pre-configured services simplify setup** - Admin doesn't need to understand cookie names; just enable GA/Meta and add tracking ID. Plugin handles the rest.
+6. **Admin page is standard WordPress** - Uses `register_setting()`, tabbed interface in template. Color picker via WordPress native `wpColorPicker()`.
+
+7. **Pre-configured services simplify setup** - Admin doesn't need to understand cookie names; just enable GA/Meta and add tracking ID. Plugin handles the rest.
 
 ---
 

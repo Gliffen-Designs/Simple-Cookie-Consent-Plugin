@@ -133,6 +133,15 @@ class Gliffen_Cookie_Consent_Manager {
                 }
             }
 
+            // No explicit decision yet: opt-in by default (US model), unless Global Privacy Control
+            // requests opt-out - keeps this in sync with the default consent-banner.js applies
+            if (!consentData) {
+                var hasGPC = (typeof navigator !== 'undefined' && navigator.globalPrivacyControl === true);
+                userConsent = hasGPC
+                    ? { necessary: true, analytics: false, marketing: false }
+                    : { necessary: true, analytics: true, marketing: true };
+            }
+
             // Cookie to category mapping
             var cookieRegistry = <?php echo json_encode($this->get_cookie_registry()); ?>;
 
@@ -153,6 +162,20 @@ class Gliffen_Cookie_Consent_Manager {
 
             // Make consent data globally available for third-party triggers
             window.glifCookieConsent = userConsent;
+
+            // Define dataLayer/gtag before GTM's container script loads so Consent Mode
+            // signals reach GTM even when GA is only installed via a GTM tag (no direct gtag.js)
+            window.dataLayer = window.dataLayer || [];
+            function gtag() { dataLayer.push(arguments); }
+            window.gtag = window.gtag || gtag;
+
+            gtag('consent', 'default', {
+                'ad_storage': userConsent.marketing === true ? 'granted' : 'denied',
+                'ad_user_data': userConsent.marketing === true ? 'granted' : 'denied',
+                'ad_personalization': userConsent.marketing === true ? 'granted' : 'denied',
+                'analytics_storage': userConsent.analytics === true ? 'granted' : 'denied',
+                'wait_for_update': 500
+            });
 
             // Check if cookie is allowed by consent
             // Reads window.glifCookieConsent live so cookies unblock immediately after "Accept" without a page reload

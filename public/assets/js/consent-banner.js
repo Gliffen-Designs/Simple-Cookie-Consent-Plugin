@@ -12,6 +12,9 @@
         banner: null,
 
         init: function() {
+            this.gpcEnabled = this.detectGPC();
+            this.isEU = this.isLikelyEU();
+
             // Check if user has already made a consent decision
             this.consent = JSON.parse(localStorage.getItem('gliffen_consent') || 'null');
 
@@ -24,9 +27,51 @@
                 return;
             }
 
-            // Show banner if no consent decision made
+            // No explicit decision yet: opt-in by default (US model) unless GPC signals opt-out,
+            // so tracking works immediately while the banner is still shown for the user's choice
+            this.consent = this.getDefaultConsent();
+            window.glifCookieConsent = this.consent;
+            this.triggerTrackingReinit();
+
             this.createBanner();
             this.attachEvents();
+        },
+
+        // Global Privacy Control: a browser/extension signal requesting opt-out of tracking
+        detectGPC: function() {
+            return typeof navigator !== 'undefined' && navigator.globalPrivacyControl === true;
+        },
+
+        // Heuristic used only to decide whether to surface the "Reject All" button
+        isLikelyEU: function() {
+            try {
+                var languages = navigator.languages || [navigator.language || ''];
+                var timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+
+                var euZones = ['Europe/', 'Atlantic/Azores', 'Atlantic/Canary'];
+                var isEUTimeZone = euZones.some(function(zone) {
+                    return timeZone.indexOf(zone) === 0;
+                });
+
+                var euLanguages = ['fr', 'de', 'it', 'es', 'nl', 'pl', 'pt', 'sv', 'da', 'fi', 'ro', 'cs', 'hu', 'sk', 'bg', 'lt', 'lv', 'et', 'sl', 'mt', 'cy', 'ga', 'hr'];
+                var hasEULanguage = languages.some(function(lang) {
+                    return euLanguages.some(function(euLang) {
+                        return (lang || '').toLowerCase().indexOf(euLang) === 0;
+                    });
+                });
+
+                return isEUTimeZone || hasEULanguage;
+            } catch (e) {
+                return false;
+            }
+        },
+
+        // US-compliant default: opt-in for everyone, unless GPC requests opt-out
+        getDefaultConsent: function() {
+            if (this.gpcEnabled) {
+                return { necessary: true, analytics: false, marketing: false };
+            }
+            return { necessary: true, analytics: true, marketing: true };
         },
 
         setupCookieConsentLink: function() {
@@ -69,7 +114,7 @@
                             ${this.settings.cookieUrl ? `<a href="${this.settings.cookieUrl}" target="_blank">Cookie Policy</a>` : ''}
                         </div>
                         <div class="gliffen-consent-banner-buttons">
-                            <button class="gliffen-consent-btn gliffen-consent-reject">Reject All</button>
+                            ${this.isEU ? '<button class="gliffen-consent-btn gliffen-consent-reject">Reject All</button>' : ''}
                             <button class="gliffen-consent-btn gliffen-consent-customize">Customize</button>
                             <button class="gliffen-consent-btn gliffen-consent-accept gliffen-primary">Accept All</button>
                         </div>
@@ -110,19 +155,34 @@
                 });
             });
 
-            // Reject All (except necessary)
-            this.banner.querySelector('.gliffen-consent-reject').addEventListener('click', function() {
-                self.saveConsent({
-                    necessary: true,
-                    analytics: false,
-                    marketing: false
+            // Reject All (except necessary) - only rendered for likely-EU visitors
+            var rejectBtn = this.banner.querySelector('.gliffen-consent-reject');
+            if (rejectBtn) {
+                rejectBtn.addEventListener('click', function() {
+                    self.saveConsent({
+                        necessary: true,
+                        analytics: false,
+                        marketing: false
+                    });
                 });
-            });
+            }
 
             // Customize
             this.banner.querySelector('.gliffen-consent-customize').addEventListener('click', function() {
                 self.showCustomizeModal();
             });
+        },
+
+        // Pre-checked state for the customize modal: analytics on, marketing off by default,
+        // so it takes one extra click to fully opt out while marketing stays opt-in-only
+        getDefaultCategoryChecked: function(category, cat) {
+            if (cat.always_enabled) {
+                return true;
+            }
+            if (this.gpcEnabled) {
+                return false;
+            }
+            return category === 'analytics';
         },
 
         showCustomizeModal: function() {
@@ -141,7 +201,7 @@
             for (var category in this.settings.categories) {
                 var cat = this.settings.categories[category];
                 var disabled = cat.always_enabled ? 'disabled' : '';
-                var checked = cat.always_enabled ? 'checked' : '';
+                var checked = this.getDefaultCategoryChecked(category, cat) ? 'checked' : '';
 
                 modalHtml += `
                     <div class="gliffen-consent-category">
@@ -220,11 +280,18 @@
         triggerTrackingReinit: function() {
             // Manually trigger tracking services to re-initialize with consent
 
-            // Google Analytics
-            if (window.gtag && this.consent && this.consent.analytics) {
-                gtag('consent', 'update', {
-                    'analytics_storage': 'granted'
-                });
+            // gtag/dataLayer are defined by the wp_head interceptor even when GA is only
+            // loaded via GTM (no direct gtag.js), so push consent updates unconditionally
+            window.dataLayer = window.dataLayer || [];
+            var gtag = window.gtag || function() { dataLayer.push(arguments); };
+            var consent = this.consent || {};
+
+            // Always push an explicit granted/denied update so revoking consent mid-session is honored, not just granting it
+            var analyticsGranted = consent.analytics === true;
+            gtag('consent', 'update', {
+                'analytics_storage': analyticsGranted ? 'granted' : 'denied'
+            });
+            if (analyticsGranted) {
                 var analyticsId = this.settings.analyticsId || this.getAnalyticsId();
                 if (analyticsId) {
                     gtag('config', analyticsId, {
@@ -234,20 +301,23 @@
             }
 
             // Meta Pixel
-            if (window.fbq && this.consent && this.consent.marketing) {
-                fbq('consent', 'grant');
-                // Optionally re-track page view
-                fbq('track', 'PageView');
+            if (window.fbq) {
+                if (consent.marketing === true) {
+                    fbq('consent', 'grant');
+                    // Optionally re-track page view
+                    fbq('track', 'PageView');
+                } else {
+                    fbq('consent', 'revoke');
+                }
             }
 
             // Google Ads / Conversion Tracking
-            if (window.gtag && this.consent && this.consent.marketing) {
-                gtag('consent', 'update', {
-                    'ad_storage': 'granted',
-                    'ad_user_data': 'granted',
-                    'ad_personalization': 'granted'
-                });
-            }
+            var marketingGranted = consent.marketing === true;
+            gtag('consent', 'update', {
+                'ad_storage': marketingGranted ? 'granted' : 'denied',
+                'ad_user_data': marketingGranted ? 'granted' : 'denied',
+                'ad_personalization': marketingGranted ? 'granted' : 'denied'
+            });
 
             // Dispatch custom event for other services
             var event = new CustomEvent('gliffen-consent-granted', {
